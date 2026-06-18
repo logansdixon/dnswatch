@@ -2,7 +2,7 @@
 
 Continuous DNS health monitor for incident response.
 
-Hammers up to 4 DNS servers in parallel with randomized lookups of known-good
+Hammers up to 20 DNS servers in parallel with randomized lookups of known-good
 domains, shows a live pass/fail + latency dashboard, and logs every query to
 CSV for the post-incident record. Queries any server by IP (internal,
 corporate, or public) — unlike a browser, which only tells you whether
@@ -58,7 +58,7 @@ Stop with **Ctrl+C** — a summary prints and the CSV is flushed.
 
 | Flag                | Default            | Meaning                                                  |
 | ------------------- | ------------------ | -------------------------------------------------------- |
-| `servers`           | (required, 1–4)    | DNS server IPs, optionally `<ip>#<port>`                 |
+| `servers`           | (required, 1–20)   | DNS server IPs, optionally `<ip>#<port>`                 |
 | `-i, --interval`    | `2.0`              | Seconds between query rounds                             |
 | `-t, --timeout`     | `2.0`              | Per-query timeout in seconds (retries use half this)     |
 | `-T, --type`        | `A`                | Record type: `A`, `AAAA`, `MX`, `NS`, `TXT`, ...         |

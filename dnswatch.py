@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dnswatch.py - Continuously test DNS resolution across up to 4 DNS servers.
+dnswatch.py - Continuously test DNS resolution across up to 20 DNS servers.
 
 Built for incident response during a DNS outage: hammers each server with
 randomized lookups of known-good domains, shows a live pass/fail + latency
@@ -249,12 +249,12 @@ def build_dashboard(stats, rounds, started, last_domain, events, rdtype, interva
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Continuously test DNS resolution across up to 4 DNS servers.",
+        description="Continuously test DNS resolution across up to 20 DNS servers.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Server format: <ip> or <ip>#<port>  e.g.  10.1.1.53  or  10.1.1.53#5353",
     )
     ap.add_argument("servers", nargs="+", type=parse_server,
-                    help="1 to 4 DNS server IPs (optionally <ip>#<port>)")
+                    help="1 to 20 DNS server IPs (optionally <ip>#<port>)")
     ap.add_argument("-i", "--interval", type=float, default=2.0,
                     help="seconds between query rounds (default 2)")
     ap.add_argument("-t", "--timeout", type=float, default=2.0,
@@ -277,8 +277,8 @@ def main():
                     help="plain line-by-line output instead of the live dashboard")
     args = ap.parse_args()
 
-    if len(args.servers) > 4:
-        ap.error("at most 4 DNS servers are supported")
+    if len(args.servers) > 20:
+        ap.error("at most 20 DNS servers are supported")
     rdtype = args.rdtype.upper()
 
     domains = DEFAULT_DOMAINS

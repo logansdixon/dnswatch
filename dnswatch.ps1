@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Continuously test DNS resolution across up to 4 DNS servers, from a plain
+    Continuously test DNS resolution across up to 20 DNS servers, from a plain
     PowerShell window. No modules to install, no other language required.
 
 .DESCRIPTION
@@ -19,7 +19,7 @@
     sets) may be truncated. For the A/AAAA/MX/NS health checks this tool is for,
     that's a non-issue.
 
-.PARAMETER Server     1 to 4 DNS servers as <ip> or <ip>#<port> (IPv4 or IPv6).
+.PARAMETER Server     1 to 20 DNS servers as <ip> or <ip>#<port> (IPv4 or IPv6).
 .PARAMETER Interval   Seconds between query rounds (default 2).
 .PARAMETER Timeout    Per-query timeout in seconds (default 2; retries use half this).
 .PARAMETER Type       Record type: A, AAAA, MX, NS, TXT, SOA, PTR, SRV, CAA (default A).
@@ -41,7 +41,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateCount(1, 4)]
+    [ValidateCount(1, 20)]
     [string[]]$Server,
 
     [double]$Interval = 2,
