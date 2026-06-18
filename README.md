@@ -47,8 +47,8 @@ python3 dnswatch.py 10.1.1.53 --domains-file mydomains.txt --log incident.csv
 PowerShell:
 
 ```powershell
-.\dnswatch.ps1 10.1.1.53 10.1.2.53 8.8.8.8 1.1.1.1
-.\dnswatch.ps1 10.1.1.53 8.8.8.8 -Interval 2 -Timeout 3
+.\dnswatch.ps1 10.1.1.53,10.1.2.53,8.8.8.8,1.1.1.1
+.\dnswatch.ps1 10.1.1.53,8.8.8.8 -Interval 2 -Timeout 3
 ```
 
 Server format: `<ip>` or `<ip>#<port>` (e.g. `10.1.1.53` or `10.1.1.53#5353`).
