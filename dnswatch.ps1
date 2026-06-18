@@ -21,10 +21,10 @@
 
 .PARAMETER Server     1 to 4 DNS servers as <ip> or <ip>#<port> (IPv4 or IPv6).
 .PARAMETER Interval   Seconds between query rounds (default 2).
-.PARAMETER Timeout    Per-query timeout in seconds (default 3).
+.PARAMETER Timeout    Per-query timeout in seconds (default 2; retries use half this).
 .PARAMETER Type       Record type: A, AAAA, MX, NS, TXT, SOA, PTR, SRV, CAA (default A).
 .PARAMETER Count      Number of rounds then stop (0 = run forever, the default).
-.PARAMETER Retries    Retry transient failures up to N times per query (default 2; 0 = raw).
+.PARAMETER Retries    Retry transient failures up to N times per query (default 1; retries use Timeout/2; 0 = raw).
 .PARAMETER DomainsFile  File with one domain per line (overrides built-in pool). '#' = comment.
 .PARAMETER Log        CSV log path (default .\dnswatch_log.csv).
 .PARAMETER NoValidate Skip the startup domain-pool sanity check.
@@ -45,10 +45,10 @@ param(
     [string[]]$Server,
 
     [double]$Interval = 2,
-    [double]$Timeout = 3,
+    [double]$Timeout = 2,
     [string]$Type = 'A',
     [int]$Count = 0,
-    [int]$Retries = 2,
+    [int]$Retries = 1,
     [string]$DomainsFile,
     [string]$Log = 'dnswatch_log.csv',
     [switch]$NoValidate,
@@ -196,12 +196,15 @@ function Invoke-DnsQuery {
 function Invoke-DnsQueryWithRetries {
     # Retry transient failures (timeout/servfail) up to $Retries times, the way a
     # real stub resolver does. Definitive negatives are returned immediately.
+    # Retries use half the timeout so a dead server doesn't stall the dashboard:
+    # one packet loss against a healthy server costs +Timeout/2, not +Timeout.
     param([string]$Ip, [int]$Port, [string]$Domain, [string]$TypeName, [double]$Timeout, [int]$Retries)
     $r = Invoke-DnsQuery -Ip $Ip -Port $Port -Domain $Domain -TypeName $TypeName -Timeout $Timeout
     $attempt = 0
+    $retryTimeout = $Timeout / 2.0
     while ($r.Category -eq 'transient' -and $attempt -lt $Retries) {
         $attempt++
-        $r = Invoke-DnsQuery -Ip $Ip -Port $Port -Domain $Domain -TypeName $TypeName -Timeout $Timeout
+        $r = Invoke-DnsQuery -Ip $Ip -Port $Port -Domain $Domain -TypeName $TypeName -Timeout $retryTimeout
     }
     $ok = $r.Category -eq 'ok'
     $result = $r.Result

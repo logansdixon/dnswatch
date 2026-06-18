@@ -166,13 +166,15 @@ def query_once(stat, domain, rdtype, timeout):
 def query_with_retries(stat, domain, rdtype, timeout, retries):
     """Retry transient failures (timeout/servfail) up to `retries` times, the
     way a real stub resolver does. Definitive negatives (NXDOMAIN/NoAnswer) are
-    returned immediately - retrying them just hides bad domains.
+    returned immediately - retrying them just hides bad domains. Retries use
+    half the timeout so a dead server doesn't stall the dashboard.
     Returns (ok, ms, result_str, category)."""
     cat, ms, result = query_once(stat, domain, rdtype, timeout)
     attempt = 0
+    retry_timeout = timeout / 2.0
     while cat == "transient" and attempt < retries:
         attempt += 1
-        cat, ms, result = query_once(stat, domain, rdtype, timeout)
+        cat, ms, result = query_once(stat, domain, rdtype, retry_timeout)
     if cat == "ok" and attempt:
         result += f"  [ok after {attempt} retr{'y' if attempt == 1 else 'ies'}]"
     return (cat == "ok"), ms, result, cat
@@ -255,8 +257,8 @@ def main():
                     help="1 to 4 DNS server IPs (optionally <ip>#<port>)")
     ap.add_argument("-i", "--interval", type=float, default=2.0,
                     help="seconds between query rounds (default 2)")
-    ap.add_argument("-t", "--timeout", type=float, default=3.0,
-                    help="per-query timeout in seconds (default 3)")
+    ap.add_argument("-t", "--timeout", type=float, default=2.0,
+                    help="per-query timeout in seconds (default 2; retries use half this)")
     ap.add_argument("-T", "--type", default="A", dest="rdtype",
                     help="record type to query: A, AAAA, MX, NS, ... (default A)")
     ap.add_argument("-c", "--count", type=int, default=0,
@@ -265,9 +267,10 @@ def main():
                     help="file with one domain per line (overrides built-in list)")
     ap.add_argument("--log", default="dnswatch_log.csv",
                     help="CSV log path (default dnswatch_log.csv)")
-    ap.add_argument("-r", "--retries", type=int, default=2,
+    ap.add_argument("-r", "--retries", type=int, default=1,
                     help="retry transient failures (timeout/servfail) up to N times "
-                         "per query, like a real resolver (default 2; 0 = raw)")
+                         "per query, like a real resolver (default 1; retries use "
+                         "timeout/2; 0 = raw)")
     ap.add_argument("--no-validate", action="store_true",
                     help="skip the startup domain-pool sanity check")
     ap.add_argument("--no-rich", action="store_true",

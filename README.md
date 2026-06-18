@@ -60,12 +60,12 @@ Stop with **Ctrl+C** — a summary prints and the CSV is flushed.
 | ------------------- | ------------------ | -------------------------------------------------------- |
 | `servers`           | (required, 1–4)    | DNS server IPs, optionally `<ip>#<port>`                 |
 | `-i, --interval`    | `2.0`              | Seconds between query rounds                             |
-| `-t, --timeout`     | `3.0`              | Per-query timeout in seconds                             |
+| `-t, --timeout`     | `2.0`              | Per-query timeout in seconds (retries use half this)     |
 | `-T, --type`        | `A`                | Record type: `A`, `AAAA`, `MX`, `NS`, `TXT`, ...         |
 | `-c, --count`       | `0` (forever)      | Stop after N rounds                                      |
 | `--domains-file`    | (built-in list)    | One domain per line; `#` lines ignored                   |
 | `--log`             | `dnswatch_log.csv` | CSV output path                                          |
-| `-r, --retries`     | `2`                | Retry transient failures (timeout/SERVFAIL) up to N      |
+| `-r, --retries`     | `1`                | Retry transient failures (timeout/SERVFAIL) up to N      |
 | `--no-validate`     | off                | Skip the startup domain-pool sanity check                |
 | `--no-rich`         | off                | Plain line-by-line output instead of the live dashboard  |
 
@@ -93,7 +93,8 @@ Successful retries are annotated in the `result` column.
 ## Retries and validation
 
 - **Transient failures** (timeout, SERVFAIL) are retried up to `--retries` times,
-  the way a real stub resolver does. The result column notes when a query
+  the way a real stub resolver does. Retries use half the timeout so a dead
+  server doesn't stall the dashboard. The result column notes when a query
   recovered on retry.
 - **Definitive negatives** (NXDOMAIN, no-such-record) are *not* retried —
   retrying them just hides bad domains in your pool.
