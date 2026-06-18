@@ -212,29 +212,82 @@ function Invoke-DnsQueryWithRetries {
     return [pscustomobject]@{ Ok = $ok; Ms = $r.Ms; Result = $result; Category = $r.Category }
 }
 
-function Initialize-DomainPool {
-    # Drop domains that get a definitive negative (no record) and never resolve -
-    # those would count as a failure every round and skew the success rate
-    # (e.g. apex cloudfront.net has no A record). Timeouts never drop a domain.
-    param([string[]]$Domains, $Servers, [string]$TypeName, [double]$Timeout, [int]$Retries)
-    $anchors = @($Domains | Select-Object -First 3)
-    $validator = $null
-    foreach ($s in $Servers) {
-        foreach ($a in $anchors) {
-            if ((Invoke-DnsQueryWithRetries -Ip $s.Ip -Port $s.Port -Domain $a -TypeName $TypeName -Timeout $Timeout -Retries $Retries).Ok) {
-                $validator = $s; break
-            }
-        }
-        if ($validator) { break }
+# ---- Concurrency: RunspacePool so per-round queries hit max(query), not sum --
+
+function New-DnsRunspacePool {
+    # Build a runspace pool with the DNS helper functions and lookup tables
+    # pre-loaded. Workers can then call Invoke-DnsQueryWithRetries directly.
+    param([int]$MaxThreads)
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    foreach ($fn in 'New-DnsQuery', 'Get-U16', 'Read-DnsName', 'Read-DnsResponse', 'Invoke-DnsQuery', 'Invoke-DnsQueryWithRetries') {
+        $def = (Get-Item function:\$fn).Definition
+        $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry $fn, $def))
     }
-    if (-not $validator) { return [pscustomobject]@{ Usable = $Domains; Dropped = @(); Validator = $null } }
+    foreach ($name in 'QTypeMap', 'RCodeName') {
+        $val = Get-Variable -Name $name -ValueOnly -Scope Script
+        $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry $name, $val, ''))
+    }
+    $pool = [runspacefactory]::CreateRunspacePool(1, [Math]::Max(1, $MaxThreads), $iss, $Host)
+    $pool.Open()
+    return $pool
+}
+
+function Invoke-ParallelDnsQueries {
+    # Submit one DNS query per job (Ip/Port/Domain) to the runspace pool and
+    # return @{ Job; Result } per input job, in submission order. Mirrors
+    # Python's ThreadPoolExecutor pattern in dnswatch.py:341-352.
+    param($Pool, $Jobs, [string]$TypeName, [double]$Timeout, [int]$Retries)
+    $async = New-Object System.Collections.Generic.List[object]
+    foreach ($j in $Jobs) {
+        $ps = [powershell]::Create().AddScript({
+                param($ip, $port, $domain, $type, $timeout, $retries)
+                Invoke-DnsQueryWithRetries -Ip $ip -Port $port -Domain $domain -TypeName $type -Timeout $timeout -Retries $retries
+            }).AddArgument($j.Ip).AddArgument($j.Port).AddArgument($j.Domain).AddArgument($TypeName).AddArgument($Timeout).AddArgument($Retries)
+        $ps.RunspacePool = $Pool
+        $async.Add([pscustomobject]@{ Job = $j; PS = $ps; Handle = $ps.BeginInvoke() })
+    }
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($a in $async) {
+        try {
+            $r = $a.PS.EndInvoke($a.Handle)
+            $result = $(if ($r.Count -gt 0) { $r[0] } else { [pscustomobject]@{ Ok = $false; Ms = $null; Result = 'no result'; Category = 'transient' } })
+        }
+        catch {
+            $result = [pscustomobject]@{ Ok = $false; Ms = $null; Result = 'WORKER: ' + $_.Exception.Message; Category = 'transient' }
+        }
+        finally { $a.PS.Dispose() }
+        $out.Add([pscustomobject]@{ Job = $a.Job; Result = $result })
+    }
+    return $out.ToArray()
+}
+
+function Initialize-DomainPool {
+    # Drop domains that get a definitive negative (no record) on every server -
+    # those would count as a failure every round and skew the success rate
+    # (e.g. apex cloudfront.net has no A record). Timeouts never drop a domain:
+    # during an outage the servers, not the domain, may be the problem.
+    param([string[]]$Domains, $Servers, [string]$TypeName, [double]$Timeout, [int]$Retries, $Pool)
+    $vTimeout = [Math]::Min($Timeout, 2.0)
+    $jobs = New-Object System.Collections.Generic.List[object]
+    foreach ($d in $Domains) {
+        foreach ($s in $Servers) {
+            $jobs.Add([pscustomobject]@{ Ip = $s.Ip; Port = $s.Port; Domain = $d })
+        }
+    }
+    $results = Invoke-ParallelDnsQueries -Pool $Pool -Jobs $jobs.ToArray() -TypeName $TypeName -Timeout $vTimeout -Retries $Retries
+    $byDomain = @{}
+    foreach ($d in $Domains) { $byDomain[$d] = New-Object System.Collections.Generic.List[string] }
+    foreach ($r in $results) { $byDomain[$r.Job.Domain].Add($r.Result.Category) }
     $usable = New-Object System.Collections.Generic.List[string]
     $dropped = New-Object System.Collections.Generic.List[string]
+    $unknown = New-Object System.Collections.Generic.List[string]
     foreach ($d in $Domains) {
-        $res = Invoke-DnsQueryWithRetries -Ip $validator.Ip -Port $validator.Port -Domain $d -TypeName $TypeName -Timeout $Timeout -Retries $Retries
-        if ($res.Category -eq 'negative') { $dropped.Add($d) } else { $usable.Add($d) }
+        $cats = $byDomain[$d]
+        if ($cats -contains 'ok')             { $usable.Add($d) }
+        elseif ($cats -contains 'negative')   { $dropped.Add($d) }
+        else                                  { $unknown.Add($d); $usable.Add($d) }
     }
-    return [pscustomobject]@{ Usable = $usable.ToArray(); Dropped = $dropped.ToArray(); Validator = $validator.Label }
+    return [pscustomobject]@{ Usable = $usable.ToArray(); Dropped = $dropped.ToArray(); Unknown = $unknown.ToArray() }
 }
 
 # ---- Display ---------------------------------------------------------------
@@ -373,23 +426,34 @@ $stats = foreach ($srv in $servers) {
     }
 }
 
+$runspacePool = New-DnsRunspacePool -MaxThreads ([Math]::Max($servers.Count, 30))
+
 if (-not $NoValidate) {
     Write-Host 'validating domain pool...' -ForegroundColor DarkGray
-    $pool = Initialize-DomainPool -Domains $domains -Servers $servers -TypeName $Type -Timeout $Timeout -Retries $Retries
-    if ($pool.Dropped.Count -gt 0) {
-        Write-Host ("dropped {0} domain(s) with no {1} record: {2}" -f $pool.Dropped.Count, $Type, ($pool.Dropped -join ', ')) -ForegroundColor Yellow
+    $poolResult = Initialize-DomainPool -Domains $domains -Servers $servers -TypeName $Type -Timeout $Timeout -Retries $Retries -Pool $runspacePool
+    if ($poolResult.Dropped.Count -gt 0) {
+        Write-Host ("dropped {0} domain(s) with no {1} record: {2}" -f $poolResult.Dropped.Count, $Type, ($poolResult.Dropped -join ', ')) -ForegroundColor Yellow
     }
-    if (-not $pool.Validator) {
+    if ($poolResult.Unknown.Count -eq $domains.Count) {
         Write-Host 'WARNING: no server answered any startup probe - servers may be down or no connectivity. Keeping full pool; failures are real.' -ForegroundColor Red
     }
-    if ($pool.Usable.Count -gt 0) { $domains = $pool.Usable }
+    elseif ($poolResult.Unknown.Count -gt 0) {
+        Write-Host ("note: {0} domain(s) inconclusive at startup (timeouts), kept in pool" -f $poolResult.Unknown.Count) -ForegroundColor DarkGray
+    }
+    if ($poolResult.Usable.Count -gt 0) { $domains = $poolResult.Usable }
     Start-Sleep -Milliseconds 800
 }
 
-# Open the CSV log (overwrite) and write the header. Anchor a relative path to the
-# current PowerShell location - .NET's CurrentDirectory is often elsewhere (System32).
-if (-not [System.IO.Path]::IsPathRooted($Log)) { $Log = Join-Path (Get-Location).Path $Log }
-$writer = [System.IO.StreamWriter]::new($Log, $false)
+# Open the CSV log (overwrite) and write the header. Resolve to a native filesystem
+# path first - on UNC/WSL/PSDrive locations Get-Location returns a provider-qualified
+# path (Microsoft.PowerShell.Core\FileSystem::...) that .NET's StreamWriter can't parse.
+$Log = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Log)
+try {
+    $writer = [System.IO.StreamWriter]::new($Log, $false)
+}
+catch {
+    throw "Could not open log file '$Log': $($_.Exception.Message). Use -Log <path> to choose a writable location."
+}
 $writer.WriteLine('timestamp,server,domain,type,ok,latency_ms,result')
 
 $events = New-Object System.Collections.Generic.List[string]
@@ -416,9 +480,17 @@ try {
         $rounds++
         $ts = (Get-Date).ToString('HH:mm:ss')
 
+        # Submit all server queries in parallel; round duration is bounded by
+        # the slowest single query, not the sum.
+        $jobs = foreach ($s in $stats) {
+            [pscustomobject]@{ Ip = $s.Ip; Port = $s.Port; Domain = $domain; Tag = $s }
+        }
+        $results = Invoke-ParallelDnsQueries -Pool $runspacePool -Jobs @($jobs) -TypeName $Type -Timeout $Timeout -Retries $Retries
+
         $parts = @()
-        foreach ($s in $stats) {
-            $res = Invoke-DnsQueryWithRetries -Ip $s.Ip -Port $s.Port -Domain $domain -TypeName $Type -Timeout $Timeout -Retries $Retries
+        foreach ($r in $results) {
+            $s = $r.Job.Tag
+            $res = $r.Result
 
             $s.Queries++
             $s.LastOk = $res.Ok
@@ -459,5 +531,6 @@ try {
 finally {
     if ($pollKeys) { try { [Console]::TreatControlCAsInput = $false } catch { } }
     if ($writer) { $writer.Flush(); $writer.Close() }
+    if ($runspacePool) { try { $runspacePool.Close(); $runspacePool.Dispose() } catch { } }
     Show-Summary -Stats $stats -Rounds $rounds -Started $started -Log $Log
 }
