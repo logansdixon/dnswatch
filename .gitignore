@@ -1,0 +1,24 @@
+# Python virtual environment (rooted in this dir)
+bin/
+include/
+lib/
+lib64
+pyvenv.cfg
+
+# Python bytecode / build
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# DNS query logs (may contain internal IPs; can grow large)
+*.csv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
